@@ -1,0 +1,1 @@
+{"imageDatas":[{"ScaleX":1.0,"ScaleY":1.0,"PosX":0,"PosY":0.0}]}

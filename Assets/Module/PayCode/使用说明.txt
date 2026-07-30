@@ -1,0 +1,17 @@
+1、PayManager.Instance.Init(float Money)
+初始化传入所需付款钱数即可自动创建
+
+2、PayEvent.payevent
+监听付款完成回调，判断bool执行对应业务逻辑
+
+3、初始化后按L可以拖动红色方块调整二维码的长宽，按J保存
+
+4、如需调整二维码或者显示收费文本可调整PayCode/Drag/二维码预制体
+
+5、public void Open(float OpenTimes = 0)
+打开页面
+
+6、public void Hide(float HideTimes = 0)
+关闭页面
+
+7、记得把PaycodeDemo和后台设置添加到Scene In Build
