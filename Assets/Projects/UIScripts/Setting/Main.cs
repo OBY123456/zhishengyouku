@@ -34,14 +34,12 @@ namespace Setting
 
         void Awake()
         {
-            DontDestroyOnLoad(gameObject);
-            Application.targetFrameRate = -1;
-            //AudioManager.Init();//音效初始化
+            Application.targetFrameRate = 60;
         }
 
         private void Start()
         {
-            Init();
+
         }
 
         [Button("设置")]
@@ -67,27 +65,6 @@ namespace Setting
         PlayerSettings.SetApiCompatibilityLevel(BuildTargetGroup.Android,ApiCompatibilityLevel.NET_4_6);
 #endif
 #endif
-        }
-
-        /// <summary>
-        ///初始化
-        /// </summary>
-        public void Init()
-        {
-
-            if (ProgramConfig.Instance)
-            {
-#if UNITY_STANDALONE_WIN
-                Cursor.visible = ProgramConfig.Instance.programData.是否显示鼠标;
-#endif
-                //if (ProgramConfig.Instance.programData.是否输出打印信息)
-                //{
-                //    Debuger.Instance.Init();
-                //}
-            }
-
-            //在这里更改场景入口
-            //StateManager.ChangeState(new UIState());
         }
 
         private void Update()

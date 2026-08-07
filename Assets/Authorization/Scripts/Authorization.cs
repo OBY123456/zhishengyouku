@@ -15,8 +15,6 @@ using System.Security.Cryptography;
 using System.Diagnostics;
 using System.Threading;
 using Debug = UnityEngine.Debug;
-using OBY.时间锁;
-//using OBY.时间锁;
 
 namespace Encryption
 {

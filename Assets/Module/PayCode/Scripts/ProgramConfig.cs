@@ -16,9 +16,9 @@ namespace Config
         /// </summary>
         public bool 是否显示鼠标 = true;
 
-        public int 分辨率X = 1920;
+        public int 分辨率X = 1142;
 
-        public int 分辨率Y = 1080;
+        public int 分辨率Y = 752;
 
         public PaymentModel 收费模式;
 
@@ -67,11 +67,13 @@ namespace Config
             {
                 SaveData();
             }
+
+            
         }
 
         private void Start()
         {
-            Screen.SetResolution(programData.分辨率X, programData.分辨率Y, FullScreenMode.FullScreenWindow);
+            
         }
 
         [Button("保存")]

@@ -27,21 +27,12 @@ public class UIState : BaseState
         if (parameteData.EvendName == EventType.PanelSwitch.ToString())
         {
             PanelName panelName = parameteData.GetParameter<PanelName>()[0];
-            switch (panelName)
-            {
-                case PanelName.WaitPanel:
-                    CurrentTask.ChangeTask(new WaitTask(this));
-                    break;
-                default:
-                    break;
-            }
         }
     }
 
     public override void Enter()
     {
         base.Enter();
-        CurrentTask.ChangeTask(new WaitTask(this));
     }
 
 
