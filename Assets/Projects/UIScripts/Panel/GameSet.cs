@@ -1,6 +1,9 @@
 ﻿using System;
+using System.Collections;
 using System.Globalization;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.Events;
 using UnityEngine.UI;
 
 public class GameSet : MonoBehaviour
@@ -23,11 +26,28 @@ public class GameSet : MonoBehaviour
     [Header("复制下载链接按钮")]
     public Button CopyToClipboard;
 
+    [Header("预览图按钮，用来检测鼠标悬停")]
+    public Button PreviewBtn;
+
+    [Header("进入详情页按钮")]
+    public Button EnterBtn;
+
+    [Header("详情按钮缩放动画时间")]
+    public float EnterBtnScaleDuration = 0.2f;
+
     private ZSYKManager manager;
+    private string gameId = string.Empty;
+    private string productCode = string.Empty;
+    private string displayGameName = string.Empty;
     private string downloadUrl = string.Empty;
     private Texture defaultCoverTexture;
     private Text buttonText;
     private InvokeInfo resetButtonInvoke;
+    private Coroutine enterScaleCoroutine;
+    private Coroutine delayedHideCoroutine;
+    private bool previewHover;
+    private bool enterHover;
+    private bool enterButtonReady;
     private int bindVersion;
 
     private void Awake()
@@ -38,18 +58,190 @@ public class GameSet : MonoBehaviour
             buttonText = CopyToClipboard.GetComponentInChildren<Text>(true);
             CopyToClipboard.onClick.AddListener(OnCopyButtonClick);
         }
+        if (EnterBtn != null)
+        {
+            EnterBtn.onClick.AddListener(OnEnterDetailClick);
+            SetEnterButtonHiddenImmediate();
+        }
+        if (PreviewBtn != null && (EnterBtn == null || PreviewBtn.gameObject != EnterBtn.gameObject)) PreviewBtn.onClick.AddListener(OnPreviewDetailClick);
+        SetupHoverEvents();
     }
 
     public void Bind(ZSYKManager owner, ZSYKManager.GameDisplayData data)
     {
         bindVersion++;
         manager = owner;
+        gameId = data == null ? string.Empty : data.Id;
+        productCode = data == null ? string.Empty : data.ProductCode;
+        displayGameName = data == null ? string.Empty : data.Name;
         downloadUrl = data == null ? string.Empty : data.DownloadUrl;
         if (GameName != null) GameName.text = data == null || string.IsNullOrEmpty(data.Name) ? "未命名游戏" : data.Name;
         if (GameEscription != null) GameEscription.text = data == null ? string.Empty : data.Description;
         if (GamePrice != null) GamePrice.text = FormatPrice(data == null ? string.Empty : data.Price);
         ResetCopyButton();
+        SetEnterButtonHiddenImmediate();
         LoadCover(data == null ? string.Empty : data.CoverUrl, bindVersion);
+    }
+
+    private void SetupHoverEvents()
+    {
+        if (PreviewBtn != null)
+        {
+            AddPointerEvent(PreviewBtn.gameObject, EventTriggerType.PointerEnter, OnPreviewPointerEnter);
+            AddPointerEvent(PreviewBtn.gameObject, EventTriggerType.PointerExit, OnPreviewPointerExit);
+        }
+        if (EnterBtn != null && (PreviewBtn == null || EnterBtn.gameObject != PreviewBtn.gameObject))
+        {
+            AddPointerEvent(EnterBtn.gameObject, EventTriggerType.PointerEnter, OnEnterButtonPointerEnter);
+            AddPointerEvent(EnterBtn.gameObject, EventTriggerType.PointerExit, OnEnterButtonPointerExit);
+        }
+    }
+
+    private static void AddPointerEvent(GameObject target, EventTriggerType eventType, UnityAction<BaseEventData> callback)
+    {
+        if (target == null || callback == null) return;
+        EventTrigger trigger = target.GetComponent<EventTrigger>();
+        if (trigger == null) trigger = target.AddComponent<EventTrigger>();
+        if (trigger.triggers == null) trigger.triggers = new System.Collections.Generic.List<EventTrigger.Entry>();
+        EventTrigger.Entry entry = new EventTrigger.Entry();
+        entry.eventID = eventType;
+        entry.callback = new EventTrigger.TriggerEvent();
+        entry.callback.AddListener(callback);
+        trigger.triggers.Add(entry);
+    }
+
+    private void OnPreviewPointerEnter(BaseEventData eventData)
+    {
+        previewHover = true;
+        CancelDelayedHide();
+        ShowEnterButton();
+    }
+
+    private void OnPreviewPointerExit(BaseEventData eventData)
+    {
+        previewHover = false;
+        RequestDelayedHide();
+    }
+
+    private void OnEnterButtonPointerEnter(BaseEventData eventData)
+    {
+        enterHover = true;
+        CancelDelayedHide();
+        ShowEnterButton();
+    }
+
+    private void OnEnterButtonPointerExit(BaseEventData eventData)
+    {
+        enterHover = false;
+        RequestDelayedHide();
+    }
+
+    private void ShowEnterButton()
+    {
+        if (EnterBtn == null) return;
+        if (enterScaleCoroutine != null) StopCoroutine(enterScaleCoroutine);
+        EnterBtn.gameObject.SetActive(true);
+        EnterBtn.interactable = true;
+        enterButtonReady = false;
+        enterScaleCoroutine = StartCoroutine(AnimateEnterButtonScale(true));
+    }
+
+    private void HideEnterButton()
+    {
+        if (EnterBtn == null) return;
+        if (enterScaleCoroutine != null) StopCoroutine(enterScaleCoroutine);
+        EnterBtn.interactable = true;
+        enterButtonReady = false;
+        enterScaleCoroutine = StartCoroutine(AnimateEnterButtonScale(false));
+    }
+
+    private IEnumerator AnimateEnterButtonScale(bool show)
+    {
+        Vector3 start = EnterBtn.transform.localScale;
+        Vector3 target = show ? Vector3.one : Vector3.zero;
+        float duration = Mathf.Max(0.01f, EnterBtnScaleDuration);
+        float time = 0f;
+
+        while (time < duration)
+        {
+            time += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(time / duration);
+            t = t * t * (3f - 2f * t);
+            EnterBtn.transform.localScale = Vector3.Lerp(start, target, t);
+            yield return null;
+        }
+
+        EnterBtn.transform.localScale = target;
+        enterScaleCoroutine = null;
+
+        if (show)
+        {
+            if (previewHover || enterHover)
+            {
+                enterButtonReady = true;
+            }
+            else
+            {
+                HideEnterButton();
+            }
+        }
+        else
+        {
+            EnterBtn.gameObject.SetActive(false);
+        }
+    }
+
+    private void RequestDelayedHide()
+    {
+        CancelDelayedHide();
+        delayedHideCoroutine = StartCoroutine(DelayedHideCoroutine());
+    }
+
+    private IEnumerator DelayedHideCoroutine()
+    {
+        yield return null;
+        delayedHideCoroutine = null;
+        if (!previewHover && !enterHover) HideEnterButton();
+    }
+
+    private void CancelDelayedHide()
+    {
+        if (delayedHideCoroutine == null) return;
+        StopCoroutine(delayedHideCoroutine);
+        delayedHideCoroutine = null;
+    }
+
+    private void SetEnterButtonHiddenImmediate()
+    {
+        previewHover = false;
+        enterHover = false;
+        enterButtonReady = false;
+        CancelDelayedHide();
+        if (enterScaleCoroutine != null)
+        {
+            StopCoroutine(enterScaleCoroutine);
+            enterScaleCoroutine = null;
+        }
+        if (EnterBtn == null) return;
+        EnterBtn.interactable = true;
+        EnterBtn.transform.localScale = Vector3.zero;
+        EnterBtn.gameObject.SetActive(false);
+    }
+
+    private void OnEnterDetailClick()
+    {
+        TryOpenDetailPage();
+    }
+
+    private void OnPreviewDetailClick()
+    {
+        TryOpenDetailPage();
+    }
+
+    private void TryOpenDetailPage()
+    {
+        if (!enterButtonReady || manager == null) return;
+        manager.OpenDetailPage(gameId, productCode, displayGameName);
     }
 
     private void OnCopyButtonClick()
@@ -151,7 +343,11 @@ public class GameSet : MonoBehaviour
     {
         bindVersion++;
         RemoveResetInvoke();
+        SetEnterButtonHiddenImmediate();
         manager = null;
+        gameId = string.Empty;
+        productCode = string.Empty;
+        displayGameName = string.Empty;
         downloadUrl = string.Empty;
         RestoreDefaultCover();
     }
@@ -159,6 +355,8 @@ public class GameSet : MonoBehaviour
     private void OnDestroy()
     {
         if (CopyToClipboard != null) CopyToClipboard.onClick.RemoveListener(OnCopyButtonClick);
+        if (EnterBtn != null) EnterBtn.onClick.RemoveListener(OnEnterDetailClick);
+        if (PreviewBtn != null && (EnterBtn == null || PreviewBtn.gameObject != EnterBtn.gameObject)) PreviewBtn.onClick.RemoveListener(OnPreviewDetailClick);
         RemoveResetInvoke();
     }
 }

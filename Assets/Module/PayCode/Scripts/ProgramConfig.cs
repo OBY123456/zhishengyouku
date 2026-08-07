@@ -67,8 +67,6 @@ namespace Config
             {
                 SaveData();
             }
-
-            
         }
 
         private void Start()

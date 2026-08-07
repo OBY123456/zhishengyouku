@@ -19,6 +19,7 @@ public class ZSYKManager : MonoBehaviour
     private const string LoginResultUrl = "api/Auth/PollLogin";
     private const string TypeListUrl = "api/YouKu/GetCategoryList";
     private const string GameListUrl = "api/YouKu/GetProductPageList";
+    private const string ProductDetailsUrl = "/api/YouKu/GetProductDetails";
     private const int GamePageSize = 50;
     private const int GamePageIndex = 0;
     private const float NetworkRetryDelay = 2f;
@@ -77,6 +78,45 @@ public class ZSYKManager : MonoBehaviour
     public Transform GameMsgContent;
     #endregion
 
+    #region 详情页
+    [Header("详情页开关")]
+    public CanvasGroup DetailPagePanel;
+
+    [Header("游戏名字")]
+    public Text GameName;
+
+    [Header("详情页图片预制体，用的是RawImage组件，大小是384x216")]
+    public GameObject PicturePrefab;
+
+    [Header("图片生成父物体")]
+    public Transform PictureParent;
+
+    [Header("左中右图片中心点之间的间隔")]
+    public float PictureSpacing = 430f;
+
+    [Header("左右图片缩放")]
+    [Range(0.1f, 1f)]
+    public float SidePictureScale = 0.5f;
+
+    [Header("图片左右切换动画时间")]
+    public float PictureSwitchDuration = 0.3f;
+
+    [Header("向左按钮")]
+    public Button TurnLeftBtn;
+
+    [Header("向右按钮")]
+    public Button TurnRightBtn;
+
+    [Header("页面，格式为1/3")]
+    public Text PageText;
+
+    [Header("图片提示，当没有可显示图片的时候显示这个，默认关闭")]
+    public Text PictureTips;
+
+    [Header("关闭页面按钮")]
+    public Button CloseBtn;
+    #endregion
+
     [Header("格式为：版本1.0")]
     public Text Version;
 
@@ -107,6 +147,13 @@ public class ZSYKManager : MonoBehaviour
     private readonly Dictionary<string, Coroutine> coverTextureCoroutines = new Dictionary<string, Coroutine>(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> networkFailureKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
+    private readonly Dictionary<string, DetailImageCache> detailImageCaches = new Dictionary<string, DetailImageCache>(StringComparer.OrdinalIgnoreCase);
+    private readonly List<DetailPictureSlot> detailPictureSlots = new List<DetailPictureSlot>();
+    private string currentDetailKey = string.Empty;
+    private int currentDetailIndex = 0;
+    private Coroutine detailSwitchCoroutine;
+    private bool detailSwitching;
+
     public bool IsLoggedIn { get { return !string.IsNullOrEmpty(jwtStr); } }
 
     [Serializable]
@@ -121,11 +168,36 @@ public class ZSYKManager : MonoBehaviour
     public class GameDisplayData
     {
         public string Id;
+        public string ProductCode;
         public string Name;
         public string Description;
         public string Price;
         public string CoverUrl;
         public string DownloadUrl;
+    }
+
+    private class DetailImageCache
+    {
+        public string Key;
+        public string ProductId;
+        public string ProductCode;
+        public bool RequestInProgress;
+        public bool DetailsLoaded;
+        public bool Downloading;
+        public bool AllDownloadsFinished;
+        public HTTPRequest DetailRequest;
+        public InvokeInfo RetryInvoke;
+        public readonly List<string> Urls = new List<string>();
+        public readonly List<Texture2D> Textures = new List<Texture2D>();
+        public bool[] DownloadFinished;
+        public int DownloadFinishedCount;
+    }
+
+    private class DetailPictureSlot
+    {
+        public GameObject Root;
+        public RectTransform Rect;
+        public RawImage Image;
     }
 
     private void Awake()
@@ -146,6 +218,7 @@ public class ZSYKManager : MonoBehaviour
         if (NetworkTips != null) NetworkTips.SetActive(false);
         if (QRCode != null) QRCode.gameObject.SetActive(true);
         SetQrParentVisible(false);
+        SetupDetailPage();
         ShowLoginPanel();
     }
 
@@ -656,9 +729,10 @@ public class ZSYKManager : MonoBehaviour
     {
         GameDisplayData data = new GameDisplayData();
         data.Id = GetString(item, "Id", "ProductId", "GameId");
+        data.ProductCode = GetString(item, "ProductCode", "Code");
         data.Name = GetString(item, "Name", "ProductName", "GameName", "Title");
         data.Description = CleanDescription(GetString(item, "Description", "ProductDescription", "GameDescription", "Desc", "Introduce", "Summary"));
-        data.Price = GetString(item, "Price", "ProductPrice", "GamePrice", "SalePrice");
+        data.Price = GetPreferredPrice(item);
         JProperty coverProperty = FindProperty(item, "CoverUrl", "Cover", "ImageUrl", "Image", "ProductImage", "ProductImageUrl", "MainImage", "Icon");
         JProperty downloadProperty = FindProperty(item, "DownloadUrl", "DownloadURL", "DownloadAddress", "DownUrl");
         JToken coverToken = coverProperty == null ? null : coverProperty.Value;
@@ -669,6 +743,22 @@ public class ZSYKManager : MonoBehaviour
         data.DownloadUrl = BuildAbsoluteUrl(rawDownloadUrl);
         if (LogAllApiResponses) PrintGameResourceAddress(data, item, coverProperty, rawCoverUrl, downloadProperty, rawDownloadUrl);
         return data;
+    }
+
+    private string GetPreferredPrice(JObject item)
+    {
+        JProperty discountProperty = FindProperty(item, "PreferentialPrice", "DiscountPrice", "DiscountedPrice", "OfferPrice", "SalePrice", "PromotionPrice", "ActivityPrice", "SpecialPrice");
+        string discountPrice = discountProperty == null ? string.Empty : GetFirstString(discountProperty.Value);
+        if (!string.IsNullOrWhiteSpace(discountPrice))
+        {
+            if (LogAllApiResponses) Debug.Log("[游戏价格] 使用优惠价，字段=" + discountProperty.Name + "，值=" + discountPrice);
+            return discountPrice;
+        }
+
+        JProperty retailProperty = FindProperty(item, "RetailPrice", "OriginalPrice", "Price", "ProductPrice", "GamePrice");
+        string retailPrice = retailProperty == null ? string.Empty : GetFirstString(retailProperty.Value);
+        if (LogAllApiResponses) Debug.Log("[游戏价格] 未找到优惠价，回退零售价，字段=" + (retailProperty == null ? "<未找到>" : retailProperty.Name) + "，值=" + EmptyText(retailPrice));
+        return retailPrice;
     }
 
     private void PrintGameResourceAddress(GameDisplayData data, JObject item, JProperty coverProperty, string rawCoverUrl, JProperty downloadProperty, string rawDownloadUrl)
@@ -817,6 +907,600 @@ public class ZSYKManager : MonoBehaviour
         }
         item.Bind(this, data);
         gameItems.Add(item);
+    }
+
+    private void SetupDetailPage()
+    {
+        SetDetailPanelVisible(false);
+        if (PictureTips != null) PictureTips.gameObject.SetActive(false);
+        if (PageText != null) PageText.text = "0/0";
+        if (TurnLeftBtn != null)
+        {
+            TurnLeftBtn.onClick.RemoveListener(TurnDetailLeft);
+            TurnLeftBtn.onClick.AddListener(TurnDetailLeft);
+            TurnLeftBtn.interactable = true;
+            TurnLeftBtn.gameObject.SetActive(false);
+        }
+        if (TurnRightBtn != null)
+        {
+            TurnRightBtn.onClick.RemoveListener(TurnDetailRight);
+            TurnRightBtn.onClick.AddListener(TurnDetailRight);
+            TurnRightBtn.interactable = true;
+            TurnRightBtn.gameObject.SetActive(false);
+        }
+        if (CloseBtn != null)
+        {
+            CloseBtn.onClick.RemoveListener(CloseDetailPage);
+            CloseBtn.onClick.AddListener(CloseDetailPage);
+        }
+        CreateDetailPictureSlots();
+    }
+
+    private void CreateDetailPictureSlots()
+    {
+        if (detailPictureSlots.Count > 0 || PicturePrefab == null || PictureParent == null) return;
+        for (int i = 0; i < 3; i++)
+        {
+            GameObject obj = Instantiate(PicturePrefab, PictureParent, false);
+            obj.name = "DetailPicture_" + i;
+            RawImage image = obj.GetComponent<RawImage>();
+            RectTransform rect = obj.transform as RectTransform;
+            if (image == null || rect == null)
+            {
+                Debug.LogError("PicturePrefab必须在根物体上包含RawImage和RectTransform组件。");
+                Destroy(obj);
+                continue;
+            }
+            DetailPictureSlot slot = new DetailPictureSlot();
+            slot.Root = obj;
+            slot.Rect = rect;
+            slot.Image = image;
+            detailPictureSlots.Add(slot);
+            obj.SetActive(false);
+        }
+    }
+
+    public void OpenDetailPage(string productId, string productCode, string gameName)
+    {
+        if (!IsLoggedIn) return;
+        if (detailPictureSlots.Count == 0) CreateDetailPictureSlots();
+        StopDetailSwitchAnimation();
+        currentDetailIndex = 0;
+        currentDetailKey = GetDetailCacheKey(productId, productCode);
+        if (GameName != null) GameName.text = string.IsNullOrEmpty(gameName) ? "未命名游戏" : gameName;
+        SetDetailPanelVisible(true);
+
+        if (string.IsNullOrEmpty(currentDetailKey))
+        {
+            ShowPictureTips("无图片可显示");
+            ClearDetailPictureSlots();
+            UpdateDetailPageText(0, 0);
+            UpdateDetailButtons(0);
+            return;
+        }
+
+        DetailImageCache cache;
+        if (!detailImageCaches.TryGetValue(currentDetailKey, out cache))
+        {
+            cache = new DetailImageCache();
+            cache.Key = currentDetailKey;
+            cache.ProductId = productId;
+            cache.ProductCode = productCode;
+            detailImageCaches.Add(currentDetailKey, cache);
+        }
+
+        RefreshDetailPage(cache);
+        if (!cache.DetailsLoaded && !cache.RequestInProgress && cache.RetryInvoke == null) RequestProductDetails(cache);
+    }
+
+    public void CloseDetailPage()
+    {
+        StopDetailSwitchAnimation();
+        SetDetailPanelVisible(false);
+        ClearDetailPictureSlots();
+        currentDetailKey = string.Empty;
+        currentDetailIndex = 0;
+    }
+
+    private void SetDetailPanelVisible(bool visible)
+    {
+        if (DetailPagePanel == null) return;
+        DetailPagePanel.gameObject.SetActive(visible);
+        DetailPagePanel.alpha = visible ? 1f : 0f;
+        DetailPagePanel.interactable = visible;
+        DetailPagePanel.blocksRaycasts = visible;
+    }
+
+    private bool IsDetailPanelVisible()
+    {
+        return DetailPagePanel != null && DetailPagePanel.gameObject.activeInHierarchy && DetailPagePanel.blocksRaycasts;
+    }
+
+    private void RequestProductDetails(DetailImageCache cache)
+    {
+        if (cache == null || cache.DetailsLoaded || cache.RequestInProgress) return;
+
+        if (string.IsNullOrWhiteSpace(cache.ProductCode))
+        {
+            Debug.LogError("[详情页] ProductCode为空，无法请求GetProductDetails。");
+            cache.DetailsLoaded = true;
+            cache.AllDownloadsFinished = true;
+            if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+            return;
+        }
+
+        cache.RequestInProgress = true;
+        string url = HttpSeverUri.TrimEnd('/') + ProductDetailsUrl + "?productCode=" + Uri.EscapeDataString(cache.ProductCode.Trim());
+
+        cache.DetailRequest = new HTTPRequest(new Uri(url), HTTPMethods.Get, (req, resp) =>
+        {
+            cache.RequestInProgress = false;
+            if (req == cache.DetailRequest) cache.DetailRequest = null;
+            PrintApiResponse("GetProductDetails", url, null, req, resp);
+
+            if (!IsHttpSuccess(req, resp))
+            {
+                if (IsUnauthorized(resp))
+                {
+                    HandleAuthorizationExpired();
+                    return;
+                }
+
+                if (IsRetryableNetworkFailure(req, resp))
+                {
+                    Debug.LogWarning("[详情页] 获取详情接口网络失败，将在" + NetworkRetryDelay + "秒后重试，Key=" + cache.Key);
+                    ScheduleProductDetailsRetry(cache);
+                    if (IsCurrentDetailCache(cache)) ShowPictureTips("图片下载中...");
+                    return;
+                }
+
+                Debug.LogError("[详情页] 获取详情接口失败，State=" + req.State + "，HTTP=" + (resp == null ? 0 : resp.StatusCode) + "，Url=" + url);
+                cache.DetailsLoaded = true;
+                cache.AllDownloadsFinished = true;
+                if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+                return;
+            }
+
+            JObject root;
+            if (!TryParseObject(resp.DataAsText, "获取游戏详情", out root) || !IsApiSuccess(root))
+            {
+                cache.DetailsLoaded = true;
+                cache.AllDownloadsFinished = true;
+                if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+                return;
+            }
+
+            cache.Urls.Clear();
+            List<string> urls = ExtractDetailImageUrls(root);
+            for (int i = 0; i < urls.Count; i++) cache.Urls.Add(urls[i]);
+            cache.DetailsLoaded = true;
+
+            Debug.Log("[详情页] GetProductDetails成功，ProductCode=" + cache.ProductCode + "，图片数量=" + cache.Urls.Count);
+
+            if (cache.Urls.Count == 0)
+            {
+                cache.AllDownloadsFinished = true;
+                cache.Downloading = false;
+                if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+                return;
+            }
+
+            StartAllDetailImageDownloads(cache);
+        });
+        cache.DetailRequest.SetHeader("accept", "*/*");
+        cache.DetailRequest.SetHeader("Authorization", "Bearer " + jwtStr);
+        cache.DetailRequest.Send();
+    }
+
+    private void ScheduleProductDetailsRetry(DetailImageCache cache)
+    {
+        if (cache == null || cache.DetailsLoaded || cache.RetryInvoke != null) return;
+        cache.RetryInvoke = InvokeUtil.Instance.Run(() =>
+        {
+            cache.RetryInvoke = null;
+            if (cache.DetailsLoaded) return;
+            RequestProductDetails(cache);
+        }, NetworkRetryDelay);
+    }
+
+    private void StartAllDetailImageDownloads(DetailImageCache cache)
+    {
+        if (cache == null || cache.Downloading || cache.AllDownloadsFinished) return;
+        cache.Textures.Clear();
+        for (int i = 0; i < cache.Urls.Count; i++) cache.Textures.Add(null);
+        cache.DownloadFinished = new bool[cache.Urls.Count];
+        cache.DownloadFinishedCount = 0;
+        cache.Downloading = true;
+
+        Debug.Log("[详情页] 开始一次性下载全部详情图片，数量=" + cache.Urls.Count + "，Key=" + cache.Key);
+        if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+        for (int i = 0; i < cache.Urls.Count; i++) StartCoroutine(DownloadDetailImageCoroutine(cache, i));
+    }
+
+    private IEnumerator DownloadDetailImageCoroutine(DetailImageCache cache, int index)
+    {
+        if (cache == null || index < 0 || index >= cache.Urls.Count) yield break;
+        string url = cache.Urls[index];
+
+        while (true)
+        {
+            using (UnityWebRequest request = UnityWebRequestTexture.GetTexture(url))
+            {
+                request.timeout = 20;
+                request.SetRequestHeader("Accept", "image/*");
+                yield return request.SendWebRequest();
+
+                if (IsUnityWebRequestSuccess(request))
+                {
+                    Texture2D texture = null;
+                    try { texture = DownloadHandlerTexture.GetContent(request); }
+                    catch (Exception e) { Debug.LogError("[详情页] 图片解析失败：" + e.Message + "，Url=" + url); }
+
+                    if (texture != null)
+                    {
+                        texture.name = "Detail_" + cache.Key + "_" + index;
+                        cache.Textures[index] = texture;
+                        Debug.Log("[详情页] 图片缓存完成 " + (index + 1) + "/" + cache.Urls.Count + "，Url=" + url);
+                    }
+                    break;
+                }
+
+                if (IsRetryableNetworkFailure(request))
+                {
+                    Debug.LogWarning("[详情页] 图片下载网络失败，" + NetworkRetryDelay + "秒后继续重试，HTTP=" + request.responseCode + "，Error=" + request.error + "，Url=" + url);
+                    yield return new WaitForSecondsRealtime(NetworkRetryDelay);
+                    continue;
+                }
+
+                Debug.LogError("[详情页] 图片下载失败且不可重试，HTTP=" + request.responseCode + "，Error=" + request.error + "，Url=" + url);
+                break;
+            }
+        }
+
+        if (cache.DownloadFinished != null && index < cache.DownloadFinished.Length && !cache.DownloadFinished[index])
+        {
+            cache.DownloadFinished[index] = true;
+            cache.DownloadFinishedCount++;
+        }
+
+        if (cache.DownloadFinishedCount >= cache.Urls.Count)
+        {
+            cache.Downloading = false;
+            cache.AllDownloadsFinished = true;
+            Debug.Log("[详情页] 全部详情图片下载结束，成功数量=" + GetAvailableDetailTextures(cache).Count + "/" + cache.Urls.Count + "，Key=" + cache.Key);
+        }
+
+        if (IsCurrentDetailCache(cache)) RefreshDetailPage(cache);
+    }
+
+    private List<Texture2D> GetAvailableDetailTextures(DetailImageCache cache)
+    {
+        List<Texture2D> result = new List<Texture2D>();
+        if (cache == null) return result;
+        for (int i = 0; i < cache.Textures.Count; i++)
+        {
+            if (cache.Textures[i] != null) result.Add(cache.Textures[i]);
+        }
+        return result;
+    }
+
+    private void RefreshDetailPage(DetailImageCache cache)
+    {
+        if (!IsCurrentDetailCache(cache)) return;
+
+        if (!cache.DetailsLoaded || cache.Downloading || !cache.AllDownloadsFinished)
+        {
+            ShowPictureTips("图片下载中...");
+            ClearDetailPictureSlots();
+            UpdateDetailPageText(0, 0);
+            UpdateDetailButtons(0);
+            return;
+        }
+
+        List<Texture2D> textures = GetAvailableDetailTextures(cache);
+        if (textures.Count == 0)
+        {
+            ShowPictureTips("无图片可显示");
+            ClearDetailPictureSlots();
+            UpdateDetailPageText(0, 0);
+            UpdateDetailButtons(0);
+            return;
+        }
+
+        HidePictureTips();
+        currentDetailIndex = Mathf.Clamp(currentDetailIndex, 0, textures.Count - 1);
+        RenderDetailPictures(textures);
+    }
+
+    private void RenderDetailPictures(List<Texture2D> textures)
+    {
+        if (textures == null || textures.Count == 0)
+        {
+            ClearDetailPictureSlots();
+            return;
+        }
+
+        if (detailPictureSlots.Count < 3) CreateDetailPictureSlots();
+        if (detailPictureSlots.Count < 3) return;
+
+        int leftIndex = currentDetailIndex - 1;
+        int rightIndex = currentDetailIndex + 1;
+
+        SetDetailPictureSlot(detailPictureSlots[0], leftIndex >= 0 ? textures[leftIndex] : null, -PictureSpacing, SidePictureScale);
+        SetDetailPictureSlot(detailPictureSlots[1], textures[currentDetailIndex], 0f, 1f);
+        SetDetailPictureSlot(detailPictureSlots[2], rightIndex < textures.Count ? textures[rightIndex] : null, PictureSpacing, SidePictureScale);
+
+        if (detailPictureSlots[1].Root != null) detailPictureSlots[1].Root.transform.SetAsLastSibling();
+        UpdateDetailPageText(currentDetailIndex + 1, textures.Count);
+        UpdateDetailButtons(textures.Count);
+    }
+
+    private void SetDetailPictureSlot(DetailPictureSlot slot, Texture2D texture, float x, float scale)
+    {
+        if (slot == null || slot.Root == null || slot.Rect == null || slot.Image == null) return;
+        if (texture == null)
+        {
+            slot.Root.SetActive(false);
+            return;
+        }
+
+        slot.Root.SetActive(true);
+        slot.Image.texture = texture;
+        slot.Image.uvRect = new Rect(0f, 0f, 1f, 1f);
+        Color color = slot.Image.color;
+        color.a = 1f;
+        slot.Image.color = color;
+        slot.Rect.anchoredPosition = new Vector2(x, 0f);
+        slot.Rect.localScale = Vector3.one * scale;
+    }
+
+    private void ClearDetailPictureSlots()
+    {
+        for (int i = 0; i < detailPictureSlots.Count; i++)
+        {
+            DetailPictureSlot slot = detailPictureSlots[i];
+            if (slot == null || slot.Root == null) continue;
+            if (slot.Image != null) slot.Image.texture = null;
+            slot.Root.SetActive(false);
+        }
+    }
+
+    private void TurnDetailLeft()
+    {
+        StartDetailSwitch(-1);
+    }
+
+    private void TurnDetailRight()
+    {
+        StartDetailSwitch(1);
+    }
+
+    private void StartDetailSwitch(int direction)
+    {
+        if (detailSwitching || direction == 0 || !IsDetailPanelVisible()) return;
+        DetailImageCache cache;
+        if (!detailImageCaches.TryGetValue(currentDetailKey, out cache) || !cache.AllDownloadsFinished) return;
+        List<Texture2D> textures = GetAvailableDetailTextures(cache);
+        int targetIndex = currentDetailIndex + direction;
+        if (targetIndex < 0 || targetIndex >= textures.Count) return;
+        detailSwitchCoroutine = StartCoroutine(AnimateDetailSwitch(direction, textures));
+    }
+
+    private IEnumerator AnimateDetailSwitch(int direction, List<Texture2D> textures)
+    {
+        detailSwitching = true;
+
+        Vector2[] startPos = new Vector2[detailPictureSlots.Count];
+        Vector3[] startScale = new Vector3[detailPictureSlots.Count];
+        float[] startAlpha = new float[detailPictureSlots.Count];
+        Vector2[] targetPos = new Vector2[detailPictureSlots.Count];
+        Vector3[] targetScale = new Vector3[detailPictureSlots.Count];
+        float[] targetAlpha = new float[detailPictureSlots.Count];
+
+        for (int i = 0; i < detailPictureSlots.Count; i++)
+        {
+            DetailPictureSlot slot = detailPictureSlots[i];
+            startPos[i] = slot.Rect.anchoredPosition;
+            startScale[i] = slot.Rect.localScale;
+            startAlpha[i] = slot.Image.color.a;
+
+            if (direction > 0)
+            {
+                if (i == 0) { targetPos[i] = new Vector2(-PictureSpacing * 2f, 0f); targetScale[i] = Vector3.one * SidePictureScale * 0.5f; targetAlpha[i] = 0f; }
+                else if (i == 1) { targetPos[i] = new Vector2(-PictureSpacing, 0f); targetScale[i] = Vector3.one * SidePictureScale; targetAlpha[i] = 1f; }
+                else { targetPos[i] = Vector2.zero; targetScale[i] = Vector3.one; targetAlpha[i] = 1f; }
+            }
+            else
+            {
+                if (i == 0) { targetPos[i] = Vector2.zero; targetScale[i] = Vector3.one; targetAlpha[i] = 1f; }
+                else if (i == 1) { targetPos[i] = new Vector2(PictureSpacing, 0f); targetScale[i] = Vector3.one * SidePictureScale; targetAlpha[i] = 1f; }
+                else { targetPos[i] = new Vector2(PictureSpacing * 2f, 0f); targetScale[i] = Vector3.one * SidePictureScale * 0.5f; targetAlpha[i] = 0f; }
+            }
+        }
+
+        float duration = Mathf.Max(0.01f, PictureSwitchDuration);
+        float time = 0f;
+        while (time < duration)
+        {
+            time += Time.unscaledDeltaTime;
+            float t = Mathf.Clamp01(time / duration);
+            t = t * t * (3f - 2f * t);
+            for (int i = 0; i < detailPictureSlots.Count; i++)
+            {
+                DetailPictureSlot slot = detailPictureSlots[i];
+                if (slot == null || slot.Root == null || !slot.Root.activeSelf) continue;
+                slot.Rect.anchoredPosition = Vector2.Lerp(startPos[i], targetPos[i], t);
+                slot.Rect.localScale = Vector3.Lerp(startScale[i], targetScale[i], t);
+                Color color = slot.Image.color;
+                color.a = Mathf.Lerp(startAlpha[i], targetAlpha[i], t);
+                slot.Image.color = color;
+            }
+            yield return null;
+        }
+
+        currentDetailIndex += direction;
+        detailSwitching = false;
+        detailSwitchCoroutine = null;
+        RenderDetailPictures(textures);
+    }
+
+    private void StopDetailSwitchAnimation()
+    {
+        if (detailSwitchCoroutine != null) StopCoroutine(detailSwitchCoroutine);
+        detailSwitchCoroutine = null;
+        detailSwitching = false;
+    }
+
+    private void UpdateDetailPageText(int current, int total)
+    {
+        if (PageText != null) PageText.text = total <= 0 ? "0/0" : current + "/" + total;
+    }
+
+    private void UpdateDetailButtons(int total)
+    {
+        bool canUse = total > 0 && !detailSwitching;
+        bool showLeft = canUse && currentDetailIndex > 0;
+        bool showRight = canUse && currentDetailIndex < total - 1;
+
+        if (TurnLeftBtn != null)
+        {
+            TurnLeftBtn.interactable = true;
+            TurnLeftBtn.gameObject.SetActive(showLeft);
+        }
+
+        if (TurnRightBtn != null)
+        {
+            TurnRightBtn.interactable = true;
+            TurnRightBtn.gameObject.SetActive(showRight);
+        }
+    }
+
+    private void ShowPictureTips(string text)
+    {
+        if (PictureTips == null) return;
+        PictureTips.text = text;
+        PictureTips.gameObject.SetActive(true);
+    }
+
+    private void HidePictureTips()
+    {
+        if (PictureTips != null) PictureTips.gameObject.SetActive(false);
+    }
+
+    private bool IsCurrentDetailCache(DetailImageCache cache)
+    {
+        return cache != null && IsDetailPanelVisible() && string.Equals(currentDetailKey, cache.Key, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetDetailCacheKey(string productId, string productCode)
+    {
+        if (!string.IsNullOrWhiteSpace(productId)) return "ID:" + productId.Trim();
+        if (!string.IsNullOrWhiteSpace(productCode)) return "CODE:" + productCode.Trim();
+        return string.Empty;
+    }
+
+    private List<string> ExtractDetailImageUrls(JObject root)
+    {
+        List<string> result = new List<string>();
+
+        JObject data = GetObject(root, "Data");
+        if (data == null) return result;
+
+        JArray productImages = GetArray(data, "ProductImage");
+        if (productImages == null || productImages.Count == 0) return result;
+
+        List<JObject> imageItems = new List<JObject>();
+
+        for (int i = 0; i < productImages.Count; i++)
+        {
+            JObject item = productImages[i] as JObject;
+            if (item != null) imageItems.Add(item);
+        }
+
+        imageItems.Sort((a, b) => GetInt(a, 0, "Sort").CompareTo(GetInt(b, 0, "Sort")));
+
+        for (int i = 0; i < imageItems.Count; i++)
+        {
+            string imageUrl = GetString(imageItems[i], "Image", "ImageUrl", "Url");
+            if (string.IsNullOrWhiteSpace(imageUrl)) continue;
+
+            AddUniqueUrl(result, BuildAbsoluteUrl(imageUrl));
+        }
+
+        return result;
+    }
+
+    private void CollectDetailImageUrls(JToken token, List<string> result, string propertyName)
+    {
+        if (token == null || result == null) return;
+
+        JValue value = token as JValue;
+        if (value != null)
+        {
+            if (value.Type != JTokenType.String) return;
+            string text = value.ToString();
+            if (!LooksLikeDetailImageUrl(text, propertyName)) return;
+            AddUniqueUrl(result, BuildAbsoluteUrl(text));
+            return;
+        }
+
+        JArray array = token as JArray;
+        if (array != null)
+        {
+            for (int i = 0; i < array.Count; i++) CollectDetailImageUrls(array[i], result, propertyName);
+            return;
+        }
+
+        JObject obj = token as JObject;
+        if (obj == null) return;
+        foreach (JProperty property in obj.Properties()) CollectDetailImageUrls(property.Value, result, property.Name);
+    }
+
+    private static bool LooksLikeDetailImageUrl(string value, string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return false;
+        string name = string.IsNullOrEmpty(propertyName) ? string.Empty : propertyName.ToLowerInvariant();
+        if (name.Contains("download")) return false;
+
+        string lower = value.Trim().ToLowerInvariant();
+        int queryIndex = lower.IndexOf('?');
+        if (queryIndex >= 0) lower = lower.Substring(0, queryIndex);
+        bool imageExtension = lower.EndsWith(".png") || lower.EndsWith(".jpg") || lower.EndsWith(".jpeg") || lower.EndsWith(".webp") || lower.EndsWith(".bmp") || lower.EndsWith(".gif");
+        if (imageExtension) return true;
+
+        return name.Contains("image") || name.Contains("picture") || name.Contains("pic") || name.Contains("screenshot") || name.Contains("detail") || name.Contains("cover") || name.Contains("url");
+    }
+
+    private void ClearDetailImageCache()
+    {
+        foreach (KeyValuePair<string, DetailImageCache> pair in detailImageCaches)
+        {
+            DetailImageCache cache = pair.Value;
+            if (cache == null) continue;
+            if (cache.RetryInvoke != null)
+            {
+                InvokeUtil.Instance.Remove(cache.RetryInvoke);
+                cache.RetryInvoke = null;
+            }
+            if (cache.DetailRequest != null)
+            {
+                try { cache.DetailRequest.Abort(); }
+                catch { }
+                cache.DetailRequest = null;
+            }
+            for (int i = 0; i < cache.Textures.Count; i++)
+            {
+                if (cache.Textures[i] != null) Destroy(cache.Textures[i]);
+            }
+            cache.Textures.Clear();
+        }
+        detailImageCaches.Clear();
+
+        for (int i = 0; i < detailPictureSlots.Count; i++)
+        {
+            if (detailPictureSlots[i] != null && detailPictureSlots[i].Root != null) Destroy(detailPictureSlots[i].Root);
+        }
+        detailPictureSlots.Clear();
     }
 
     private void HandleAuthorizationExpired()
@@ -1282,13 +1966,16 @@ public class ZSYKManager : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (TurnLeftBtn != null) TurnLeftBtn.onClick.RemoveListener(TurnDetailLeft);
+        if (TurnRightBtn != null) TurnRightBtn.onClick.RemoveListener(TurnDetailRight);
+        if (CloseBtn != null) CloseBtn.onClick.RemoveListener(CloseDetailPage);
+        StopDetailSwitchAnimation();
         StopLoginFlow();
         StopRetryCoroutine(ref categoryRetryCoroutine);
         StopRetryCoroutine(ref gameListRetryCoroutine);
         AbortRequest(ref categoryRequest);
         AbortRequest(ref gameListRequest);
-        //ClearTypeItems();
-        //ClearGameItems();
+        ClearDetailImageCache();
         ClearCoverTextureCache();
         networkFailureKeys.Clear();
         ReleaseRuntimeQrTexture();
